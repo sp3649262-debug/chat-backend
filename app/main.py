@@ -1,13 +1,16 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from app.database import Base, engine
+from sqlalchemy.orm import Session
+
+from app.database import engine, Base, get_db
+from app.models import User, Message
 from app.routers import auth, contacts, chat
 
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="Real-Time Messaging Backend")
 
-# Browser theke sob request allow korar jonno CORS add kora holo
+# CORS Setup
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -16,6 +19,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Routers Include
 app.include_router(auth.router)
 app.include_router(contacts.router)
 app.include_router(chat.router)
@@ -23,17 +27,12 @@ app.include_router(chat.router)
 @app.get("/")
 def root():
     return {"status": "Messaging API is running"}
-    from fastapi import Depends
-from sqlalchemy.orm import Session
-from app.database import get_db
-from app.models import User, Message
 
-# Admin route shob users ebong messages dekhar jonno
+# Admin endpoint to view all database records
 @app.get("/admin/all-data")
 def get_all_data(db: Session = Depends(get_db)):
     users = db.query(User).all()
     messages = db.query(Message).all()
-    
     return {
         "total_users": len(users),
         "users": [

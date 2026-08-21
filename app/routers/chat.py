@@ -5,28 +5,53 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from app.database import SessionLocal
 from app.models import ChatRoomMessage
 
+# Prefix /chat ebong normal path duto-i support korbe
 router = APIRouter()
 
-# --- Database Saver ---
-def save_message_to_db(room_code: str, sender: str, content: str, time_str: str = ""):
+# --- Database Helper Functions ---
+
+def save_message(room_code: str, sender: str, content: str, time: str = ""):
+    db = SessionLocal()
     try:
-        db = SessionLocal()
-        if not time_str:
-            time_str = datetime.now().strftime("%I:%M %p")
+        if not time:
+            time = datetime.now().strftime("%I:%M %p")
         msg = ChatRoomMessage(
             room_code=str(room_code),
             sender=str(sender),
             content=str(content),
-            time=time_str
+            time=time
         )
         db.add(msg)
         db.commit()
-        db.close()
     except Exception as e:
-        print(f"DB Save Error: {e}")
+        print(f"Error saving message: {e}")
+        db.rollback()
+    finally:
+        db.close()
 
-# --- Connection Manager ---
-class ConnectionManager:
+
+def get_room_history(room_code: str):
+    db = SessionLocal()
+    try:
+        messages = db.query(ChatRoomMessage).filter(ChatRoomMessage.room_code == str(room_code)).all()
+        return [
+            {
+                "sender": m.sender,
+                "content": m.content,
+                "time": m.time
+            }
+            for m in messages
+        ]
+    except Exception as e:
+        print(f"Error fetching history: {e}")
+        return []
+    finally:
+        db.close()
+
+
+# --- Room Manager ---
+
+class RoomConnectionManager:
     def __init__(self):
         self.rooms: Dict[str, List[WebSocket]] = {}
 
@@ -37,58 +62,69 @@ class ConnectionManager:
         self.rooms[room_code].append(websocket)
 
     def disconnect(self, room_code: str, websocket: WebSocket):
-        if room_code in self.rooms and websocket in self.rooms[room_code]:
-            self.rooms[room_code].remove(websocket)
-            if not self.rooms[room_code]:
+        if room_code in self.rooms:
+            if websocket in self.rooms[room_code]:
+                self.rooms[room_code].remove(websocket)
+            if len(self.rooms[room_code]) == 0:
                 del self.rooms[room_code]
 
-    async def broadcast(self, room_code: str, message: str):
+    async def broadcast(self, room_code: str, message: dict):
         if room_code in self.rooms:
             for connection in list(self.rooms[room_code]):
                 try:
-                    await connection.send_text(message)
+                    await connection.send_json(message)
                 except Exception:
                     self.disconnect(room_code, connection)
 
-manager = ConnectionManager()
 
-async def handle_chat_session(websocket: WebSocket, room_code: str, default_user: str):
+manager = RoomConnectionManager()
+
+
+# --- Main Chat Handler ---
+
+async def handle_chat(websocket: WebSocket, room_code: str, user_name: str):
     await manager.connect(room_code, websocket)
+
+    # 1. Join korar por purono history pathano (Flutter jeta wait korche)
+    history = get_room_history(room_code)
+    await websocket.send_json({"type": "history", "data": history})
+
     try:
         while True:
-            data = await websocket.receive_text()
-            
-            sender = default_user
-            content = data
-            msg_time = datetime.now().strftime("%I:%M %p")
-            
-            # Extract content if JSON
-            try:
-                payload = json.loads(data)
-                if isinstance(payload, dict):
-                    sender = payload.get("sender") or payload.get("user") or payload.get("name") or default_user
-                    content = payload.get("content") or payload.get("message") or payload.get("text") or data
-                    msg_time = payload.get("time") or msg_time
-            except Exception:
-                pass
+            # 2. Flutter theke message recieve
+            data = await websocket.receive_json()
 
-            # 1. Broadcast immediately to all users in the room
-            await manager.broadcast(room_code, data)
+            sender = data.get("sender", user_name)
+            content = data.get("content", data.get("message", ""))
+            msg_time = data.get("time", datetime.now().strftime("%I:%M %p"))
 
-            # 2. Save in database
-            save_message_to_db(room_code, sender, content, msg_time)
+            # 3. Database-e save
+            save_message(room_code, sender, content, msg_time)
+
+            # 4. Flutter expect korche erokom structured JSON broadcast
+            broadcast_payload = {
+                "type": "message",
+                "data": {
+                    "sender": sender,
+                    "content": content,
+                    "time": msg_time
+                }
+            }
+            await manager.broadcast(room_code, broadcast_payload)
 
     except WebSocketDisconnect:
         manager.disconnect(room_code, websocket)
     except Exception as e:
-        print(f"WS Error: {e}")
+        print(f"WS Exception: {e}")
         manager.disconnect(room_code, websocket)
 
-# Support both URL structures (with or without username parameter)
-@router.websocket("/ws/{room_code}")
-async def ws_single(websocket: WebSocket, room_code: str):
-    await handle_chat_session(websocket, room_code, "Anonymous")
 
+# Flutter-e thaka URL /chat/ws/... support
+@router.websocket("/chat/ws/{room_code}/{user_name}")
+async def ws_with_chat_prefix(websocket: WebSocket, room_code: str, user_name: str):
+    await handle_chat(websocket, room_code, user_name)
+
+# Normal /ws/... support
 @router.websocket("/ws/{room_code}/{user_name}")
-async def ws_double(websocket: WebSocket, room_code: str, user_name: str):
-    await handle_chat_session(websocket, room_code, user_name)
+async def ws_without_prefix(websocket: WebSocket, room_code: str, user_name: str):
+    await handle_chat(websocket, room_code, user_name)

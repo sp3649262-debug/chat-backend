@@ -31,7 +31,7 @@ def root():
     return {"status": "Messaging API is running"}
 
 
-# Admin Endpoint to View All Room Messages
+# Admin Endpoint: View All Room Messages
 @app.get("/admin/all-data")
 def get_all_data(db: Session = Depends(get_db)):
     messages = db.query(ChatRoomMessage).all()
@@ -48,4 +48,18 @@ def get_all_data(db: Session = Depends(get_db)):
             }
             for m in messages
         ],
+    }
+
+
+# Room Delete Endpoint: Direct Browser বা Terminal theke delete kora
+@app.get("/room/{room_code}/clear")
+@app.delete("/room/{room_code}/clear")
+def clear_room_messages(room_code: str, db: Session = Depends(get_db)):
+    deleted_count = db.query(ChatRoomMessage).filter(ChatRoomMessage.room_code == str(room_code)).delete()
+    db.commit()
+    return {
+        "status": "success",
+        "room_code": room_code,
+        "deleted_count": deleted_count,
+        "message": f"Successfully deleted {deleted_count} messages"
     }

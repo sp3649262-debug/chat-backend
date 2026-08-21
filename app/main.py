@@ -23,3 +23,38 @@ app.include_router(chat.router)
 @app.get("/")
 def root():
     return {"status": "Messaging API is running"}
+    from fastapi import Depends
+from sqlalchemy.orm import Session
+from app.database import get_db
+from app.models import User, Message
+
+# Admin route shob users ebong messages dekhar jonno
+@app.get("/admin/all-data")
+def get_all_data(db: Session = Depends(get_db)):
+    users = db.query(User).all()
+    messages = db.query(Message).all()
+    
+    return {
+        "total_users": len(users),
+        "users": [
+            {
+                "id": u.id,
+                "phone_number": u.phone_number,
+                "display_name": u.display_name,
+                "created_at": str(u.created_at)
+            }
+            for u in users
+        ],
+        "total_messages": len(messages),
+        "messages": [
+            {
+                "id": m.id,
+                "sender_id": m.sender_id,
+                "receiver_id": m.receiver_id,
+                "content": m.content,
+                "status": m.status,
+                "timestamp": str(m.timestamp)
+            }
+            for m in messages
+        ]
+    }

@@ -5,7 +5,6 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from app.database import SessionLocal
 from app.models import ChatRoomMessage
 
-# Prefix /chat ebong normal path duto-i support korbe
 router = APIRouter()
 
 # --- Database Helper Functions ---
@@ -49,7 +48,21 @@ def get_room_history(room_code: str):
         db.close()
 
 
-# --- Room Manager ---
+def auto_delete_room(room_code: str):
+    """Room theke shobai beriye gele database theke data muche fela"""
+    db = SessionLocal()
+    try:
+        deleted = db.query(ChatRoomMessage).filter(ChatRoomMessage.room_code == str(room_code)).delete()
+        db.commit()
+        print(f"[Auto-Delete] Cleared {deleted} messages for empty room: {room_code}")
+    except Exception as e:
+        print(f"Error auto-deleting room messages: {e}")
+        db.rollback()
+    finally:
+        db.close()
+
+
+# --- Room Manager with Auto-Destruct ---
 
 class RoomConnectionManager:
     def __init__(self):
@@ -65,8 +78,11 @@ class RoomConnectionManager:
         if room_code in self.rooms:
             if websocket in self.rooms[room_code]:
                 self.rooms[room_code].remove(websocket)
+            
+            # Jodi room-e aar keu na thake (Count = 0), shathe shathe auto-delete hobe
             if len(self.rooms[room_code]) == 0:
                 del self.rooms[room_code]
+                auto_delete_room(room_code)
 
     async def broadcast(self, room_code: str, message: dict):
         if room_code in self.rooms:
@@ -85,23 +101,22 @@ manager = RoomConnectionManager()
 async def handle_chat(websocket: WebSocket, room_code: str, user_name: str):
     await manager.connect(room_code, websocket)
 
-    # 1. Join korar por purono history pathano (Flutter jeta wait korche)
+    # 1. Join korar shomoy purono history pathano
     history = get_room_history(room_code)
     await websocket.send_json({"type": "history", "data": history})
 
     try:
         while True:
-            # 2. Flutter theke message recieve
             data = await websocket.receive_json()
 
             sender = data.get("sender", user_name)
             content = data.get("content", data.get("message", ""))
             msg_time = data.get("time", datetime.now().strftime("%I:%M %p"))
 
-            # 3. Database-e save
+            # 2. Database-e save kora
             save_message(room_code, sender, content, msg_time)
 
-            # 4. Flutter expect korche erokom structured JSON broadcast
+            # 3. Frontend-e broadcast
             broadcast_payload = {
                 "type": "message",
                 "data": {
@@ -119,12 +134,11 @@ async def handle_chat(websocket: WebSocket, room_code: str, user_name: str):
         manager.disconnect(room_code, websocket)
 
 
-# Flutter-e thaka URL /chat/ws/... support
+# URLs
 @router.websocket("/chat/ws/{room_code}/{user_name}")
 async def ws_with_chat_prefix(websocket: WebSocket, room_code: str, user_name: str):
     await handle_chat(websocket, room_code, user_name)
 
-# Normal /ws/... support
 @router.websocket("/ws/{room_code}/{user_name}")
 async def ws_without_prefix(websocket: WebSocket, room_code: str, user_name: str):
     await handle_chat(websocket, room_code, user_name)
